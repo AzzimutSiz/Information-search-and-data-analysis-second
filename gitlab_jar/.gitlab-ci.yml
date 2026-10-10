@@ -1,0 +1,56 @@
+stages:
+  - build
+  - test
+  - deploy
+
+default:
+  image: maven:3.9-eclipse-temurin-11
+  cache:
+    key: maven-cache
+    paths:
+      - .m2/repository
+
+variables:
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository"
+  DEPLOY_PORT: "22"
+
+build:
+  stage: build
+  script:
+    - mvn -B -ntp -DskipTests package
+  artifacts:
+    paths:
+      - target/demo-app.jar
+    expire_in: 1 week
+
+test:
+  stage: test
+  script:
+    - mvn -B -ntp test
+
+deploy:
+  stage: deploy
+  image: alpine:3.21
+  resource_group: production
+  environment:
+    name: production
+  needs:
+    - job: build
+      artifacts: true
+    - job: test
+      artifacts: false
+  before_script:
+    - apk add --no-cache openssh-client
+    - test -s "$SSH_PRIVATE_KEY" && test -s "$SSH_KNOWN_HOSTS"
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - chmod 400 "$SSH_PRIVATE_KEY"
+    - cp "$SSH_KNOWN_HOSTS" ~/.ssh/known_hosts
+    - chmod 600 ~/.ssh/known_hosts
+  script:
+    - test -n "$DEPLOY_HOST" && test -n "$DEPLOY_USER"
+    - ssh -i "$SSH_PRIVATE_KEY" -o IdentitiesOnly=yes -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" 'mkdir -p ~/java-ci-demo'
+    - scp -i "$SSH_PRIVATE_KEY" -o IdentitiesOnly=yes -P "$DEPLOY_PORT" target/demo-app.jar "${DEPLOY_USER}@${DEPLOY_HOST}:java-ci-demo/app-next.jar"
+    - ssh -i "$SSH_PRIVATE_KEY" -o IdentitiesOnly=yes -p "$DEPLOY_PORT" "${DEPLOY_USER}@${DEPLOY_HOST}" 'sh -s' < scripts/deploy.sh
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
